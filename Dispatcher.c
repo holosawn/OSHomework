@@ -137,6 +137,20 @@ void startNewProcessOnCPU(Cpu *cpu, Process process, int *related_ram, Queue *cu
     cpu->current_queue = current_queue;
 }
 
+void startNewProcessOnCPUWithQuantum(Cpu *cpu, Process process, int *related_ram, int quantum, Queue *current_queue) {  
+    cpu->current_process = malloc(sizeof(Process)); // Allocate memory for the new process
+    if (cpu->current_process == NULL) {
+        // Handle memory allocation failure
+        fprintf(stderr, "Memory allocation failed\n");
+        exit(EXIT_FAILURE);
+    }
+    *(cpu->current_process) = process; // Copy the contents of the dequeued process
+    cpu->available_rate = 100 - process.cpu;
+    cpu->remaining_busy_time = quantum;
+    *related_ram -= process.ram;
+    cpu->current_queue = current_queue;
+}
+
 // Comparator function for SJF (Shortest Job First)
 int compareBurstTime(const void* a, const void* b) {
     Process* p1 = (Process*)a;
@@ -223,6 +237,30 @@ void checkAndEnqueueProcess(Process *processes, int process_count, int current_t
     }
 }
 
+void handleCpu2ProcessCompletion(Cpu *cpu2, int *cpu2_allocated_ram, bool *is_cpu2_quantum_restricted, FILE *output_file) {
+    char buffer[256];
+
+    if (*is_cpu2_quantum_restricted) {
+        Process *copy = (Process *)malloc(sizeof(Process));  // Allocate memory for the new process
+        if (copy == NULL) {
+            fprintf(stderr, "Memory allocation failed\n");
+            exit(EXIT_FAILURE);
+        }
+        *copy = *(cpu2->current_process); // Copy the contents of the current process
+
+        enqueue(cpu2->current_queue, *copy);
+        snprintf(buffer, sizeof(buffer), "The operation of process %s run until the defined quantum time and is queued again because the process is not completed.\n", cpu2->current_process->process_number);
+
+        *is_cpu2_quantum_restricted = false;
+    } else {
+        snprintf(buffer, sizeof(buffer), "The operation of process %s is completed and terminated.\n", cpu2->current_process->process_number);
+    }
+
+    printf("%s", buffer);
+    writeToFile(output_file, buffer);
+    completeProcessOnCPU2(cpu2, cpu2_allocated_ram);
+}
+
 void assignProcessToCpu(Cpu *cpu, Queue *queue, int *allocated_ram, FILE *output_file, const char *cpu_label) {
     char buffer[256];
 
@@ -233,6 +271,27 @@ void assignProcessToCpu(Cpu *cpu, Queue *queue, int *allocated_ram, FILE *output
     printf("%s", buffer);
     writeToFile(output_file, buffer);
 }
+
+void assignProcessToCpuWithQuantum(Cpu *cpu, Queue *queue, int *allocated_ram, int quantum, bool *is_cpu_quantum_restricted, FILE *output_file) {
+    char buffer[256];
+
+    Process p = dequeue(queue);
+
+    if (p.burst_time > quantum) {
+        p.burst_time -= quantum;
+        if (p.burst_time > quantum) {
+            *is_cpu_quantum_restricted = true;
+        }
+        startNewProcessOnCPUWithQuantum(cpu, p, allocated_ram, quantum, queue);
+    } else {
+        startNewProcessOnCPU(cpu, p, allocated_ram, queue);
+    }
+
+    snprintf(buffer, sizeof(buffer), "Process %s is assigned to CPU.\n", p.process_number);
+    printf("%s", buffer);
+    writeToFile(output_file, buffer);
+}
+
 
 void scheduler(Process processes[], int process_count) {
     FILE *output_file = fopen("output.txt", "w"); // Open file for writing
@@ -266,10 +325,7 @@ void scheduler(Process processes[], int process_count) {
             completeProcessOnCPU1(&cpu1, &cpu1_allocated_ram);
         }
         if (cpu2.current_process != NULL && cpu2.remaining_busy_time == 0){
-            snprintf(buffer, sizeof(buffer),"Process %s is completed and terminated.\n", cpu2.current_process->process_number);
-            printf("%s", buffer);
-            writeToFile(output_file,buffer);
-            completeProcessOnCPU1(&cpu2, &cpu2_allocated_ram);
+            handleCpu2ProcessCompletion(&cpu2, &cpu2_allocated_ram, &is_cpu2_quantum_restricted, output_file);
         }
 
         if (!isEmpty(&cpu1_queue) && cpu1.current_process == NULL){
@@ -280,7 +336,7 @@ void scheduler(Process processes[], int process_count) {
             assignProcessToCpu(&cpu2, &cpu2_que1, &cpu2_allocated_ram, output_file, "CPU-2");
         } 
         else if (!isEmpty(&cpu2_que2) && cpu2.current_process == NULL){
-            assignProcessToCpu(&cpu2, &cpu2_que2, &cpu2_allocated_ram, output_file, "CPU-2");
+            assignProcessToCpuWithQuantum(&cpu2, &cpu2_que2, &cpu2_allocated_ram, CPU2_QUEUE2_QUANTUM, &is_cpu2_quantum_restricted, output_file);
         } 
         else if (!isEmpty(&cpu2_que3) && cpu2.current_process == NULL){
             assignProcessToCpu(&cpu1, &cpu2_que3, &cpu2_allocated_ram, output_file, "CPU-2");
